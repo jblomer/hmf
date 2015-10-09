@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <iostream>
 #include <unordered_map>
+#include <unordered_set>
 #include <string>
 #include <vector>
 
@@ -34,6 +35,24 @@ Int_t defined_bins_sparse;
 
 unordered_map<int, string> hist_names;
 unordered_map<int, unordered_map<int, double> > hist;
+
+struct BinNo {
+  BinNo() : histno(0), binno(0) { }
+  BinNo(int h, int b) : histno(h), binno(b) { }
+  bool operator ==(const BinNo &other) const {
+    return (this->histno == other.histno) && (this->binno == other.binno);
+  }
+  int histno;
+  int binno;
+};
+
+struct HashBinNo {
+   size_t operator() (const BinNo &x) const {
+     return MurmurHash64A(&x, sizeof(x), 42);
+   }
+};
+
+unordered_set<BinNo, HashBinNo> my_hist;
 
 struct Bin {
   Bin() : nhist(0), nbin(0), val(.0), err(.0) { }
@@ -190,10 +209,12 @@ static void *main_recv(void *data) {
     Bin *recv_buf = (Bin *)malloc(size * sizeof(Bin));
     MPI_Recv(recv_buf, size * sizeof(Bin), MPI_BYTE, rank, 0,
              MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    printf("  I'm %d, got data packet from %d with %u bins\n", 
+    printf("  I'm %d, got data packet from %d with %u bins\n",
            world_rank, rank, size);
     for (unsigned i = 0; i < size; ++i) {
       hist[recv_buf[i].nhist][recv_buf[i].nbin] += recv_buf[i].val;
+      BinNo bn(recv_buf[i].nhist, recv_buf[i].nbin);
+      my_hist.insert(bn);
     }
     free(recv_buf);
   }
@@ -257,11 +278,37 @@ int main(int argc, char **argv) {
   MPI_Barrier(MPI_COMM_WORLD);
 
   if (world_rank != 0) {
+    vector<Bin> my_bins;
+    for (auto i = my_hist.begin(); i != my_hist.end(); ++i) {
+      my_bins.push_back(Bin(i->histno, i->binno, hist[i->histno][i->binno]));
+    }
+    unsigned size = my_bins.size();
+    MPI_Ssend(&world_rank, sizeof(int), MPI_BYTE, 0, 0, MPI_COMM_WORLD);
+    MPI_Ssend(&size, sizeof(unsigned), MPI_BYTE, 0, 0, MPI_COMM_WORLD);
+    MPI_Ssend(&my_bins[0], size * sizeof(Bin), MPI_BYTE, 0, 0, MPI_COMM_WORLD);
     MPI_Finalize();
     return 0;
   }
 
   printf("Here's your master thread, reading out results.\n");
+
+  for (int i = 1; i < world_size; ++i) {
+    int rank;
+    unsigned size;
+    MPI_Recv(&rank, sizeof(int), MPI_BYTE, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD,
+             MPI_STATUS_IGNORE);
+    MPI_Recv(&size, sizeof(size), MPI_BYTE, rank, 0, MPI_COMM_WORLD,
+             MPI_STATUS_IGNORE);
+    Bin *recv_buf = (Bin *)malloc(size * sizeof(Bin));
+    MPI_Recv(recv_buf, size * sizeof(Bin), MPI_BYTE, rank, 0,
+             MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    printf("  Got bins from %d with %u bins\n", rank, size);
+    for (unsigned i = 0; i < size; ++i) {
+      hist[recv_buf[i].nhist][recv_buf[i].nbin] = recv_buf[i].val;
+    }
+    free(recv_buf);
+  }
+
   MPI_Finalize();
   return 0;
 }
