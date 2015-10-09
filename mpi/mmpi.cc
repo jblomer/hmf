@@ -181,13 +181,17 @@ static void ReadHistos(char *input_path) {
 
 static void *main_recv(void *data) {
   for (int i = 0; i < world_size; ++i) {
+    int rank;
     unsigned size;
-    MPI_Recv(&size, sizeof(size), MPI_BYTE, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD,
+    MPI_Recv(&rank, sizeof(int), MPI_BYTE, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD,
+             MPI_STATUS_IGNORE);
+    MPI_Recv(&size, sizeof(size), MPI_BYTE, rank, 0, MPI_COMM_WORLD,
              MPI_STATUS_IGNORE);
     Bin *recv_buf = (Bin *)malloc(size * sizeof(Bin));
-    MPI_Recv(recv_buf, size * sizeof(Bin), MPI_BYTE, MPI_ANY_SOURCE, 0,
+    MPI_Recv(recv_buf, size * sizeof(Bin), MPI_BYTE, rank, 0,
              MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    printf("  I'm %d, got %dth data packet\n", world_rank, i);
+    printf("  I'm %d, got data packet from %d with %u bins\n", 
+           world_rank, rank, size);
     for (unsigned i = 0; i < size; ++i) {
       hist[recv_buf[i].nhist][recv_buf[i].nbin] += recv_buf[i].val;
     }
@@ -229,7 +233,7 @@ int main(int argc, char **argv) {
       global_bin.a = i->first;
       global_bin.b = j->second;
       uint32_t hashed = MurmurHash2(&global_bin, sizeof(global_bin), 42);
-      dispatch[hashed % world_rank].push_back(
+      dispatch[hashed % world_size].push_back(
         Bin(i->first, j->first, j->second));
     }
   }
@@ -243,6 +247,7 @@ int main(int argc, char **argv) {
   for (int i = 0; i < world_size; ++i) {
     printf("I'm rank %d, sending data to rank %d\n", world_rank, i);
     unsigned size = dispatch[i].size();
+    MPI_Ssend(&world_rank, sizeof(int), MPI_BYTE, i, 0, MPI_COMM_WORLD);
     MPI_Ssend(&size, sizeof(unsigned), MPI_BYTE, i, 0, MPI_COMM_WORLD);
     MPI_Ssend(&dispatch[i][0], dispatch[i].size() * sizeof(Bin), MPI_BYTE,
               i, 0, MPI_COMM_WORLD);
