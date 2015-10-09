@@ -32,6 +32,7 @@ Int_t defined_bins;
 Int_t total_histos_sparse;
 Int_t total_bins_sparse;
 Int_t defined_bins_sparse;
+double total_sum = 0.0;
 
 unordered_map<int, string> hist_names;
 unordered_map<int, unordered_map<int, double> > hist;
@@ -127,6 +128,7 @@ static void ProcessHisto(const TH1 *h) {
     }
   }
   cerr << "      All_sums " << all_sum << endl;
+  total_sum += all_sum;
 }
 
 static void WalkRootfile(TFile *source) {
@@ -199,7 +201,7 @@ static void ReadHistos(char *input_path) {
 }
 
 static void *main_recv(void *data) {
-  for (int i = 0; i < world_size; ++i) {
+  for (int i = 0; i < world_size-1; ++i) {
     int rank;
     unsigned size;
     MPI_Recv(&rank, sizeof(int), MPI_BYTE, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD,
@@ -266,6 +268,8 @@ int main(int argc, char **argv) {
   pthread_t thread_recv;
   pthread_create(&thread_recv, NULL, main_recv, NULL);
   for (int i = 0; i < world_size; ++i) {
+    if (i == world_rank)
+      continue;
     printf("I'm rank %d, sending data to rank %d\n", world_rank, i);
     unsigned size = dispatch[i].size();
     MPI_Ssend(&world_rank, sizeof(int), MPI_BYTE, i, 0, MPI_COMM_WORLD);
@@ -292,6 +296,7 @@ int main(int argc, char **argv) {
 
   printf("Here's your master thread, reading out results.\n");
 
+  unsigned got_bins = 0;
   for (int i = 1; i < world_size; ++i) {
     int rank;
     unsigned size;
@@ -303,11 +308,24 @@ int main(int argc, char **argv) {
     MPI_Recv(recv_buf, size * sizeof(Bin), MPI_BYTE, rank, 0,
              MPI_COMM_WORLD, MPI_STATUS_IGNORE);
     printf("  Got bins from %d with %u bins\n", rank, size);
+    got_bins += size;
     for (unsigned i = 0; i < size; ++i) {
       hist[recv_buf[i].nhist][recv_buf[i].nbin] = recv_buf[i].val;
     }
     free(recv_buf);
   }
+
+  printf("total bins: %u, got bins %u, got bins normalized %u\n",
+         total_bins, got_bins, got_bins/(world_size - 1));
+  printf("This process total sum %lf\n", total_sum);
+  double merged_sum = 0.0;
+  for (auto i = hist.begin(); i != hist.end(); ++i) {
+    for (auto j = i->second.begin(); j != i->second.end(); ++j) {
+      merged_sum += j->second;
+    }
+  }
+  printf("Merged total sum %lf (merged/N %lf)\n",
+         merged_sum, merged_sum/world_size);
 
   MPI_Finalize();
   return 0;
